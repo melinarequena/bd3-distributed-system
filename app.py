@@ -122,15 +122,6 @@ def health():
         log_size=len(log),
     )
 
-
-
-# Modelo del alumno
-    dni: str
-    nombre: str
-    carrera: str
-    anio: int
-    nota_promedio: float
-
 @app.post("/alumnos")
 def crear_alumno(alumno: Alumno):
     """
