@@ -1,0 +1,11 @@
+$env:NODE_ID="n1"
+uvicorn app:app --port 8001 --reload
+
+
+$env:NODE_ID="n2"
+uvicorn app:app --port 8002 --reload
+
+
+
+$env:NODE_ID="n3"
+uvicorn app:app --port 8003 --reload
