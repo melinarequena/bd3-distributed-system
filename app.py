@@ -1,9 +1,9 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel # Estructuras de datos con validacion automatica
 from typing import Dict, List
-from fastapi import HTTPException
-import requests
-import os
+from fastapi import HTTPException # Codigos HTTP por errores
+import requests # Peticiones HTTP entre nodos
+import os # Leer env
 
 # --- Configuración simple del nodo ---
 NODE_IDS: List[str] = ["n1", "n2", "n3"]
@@ -21,18 +21,21 @@ def make_initial_vc(node_ids: List[str]) -> Dict[str, int]:
 
 # --- Estado local mínimo (aún sin alumnos) ---
 vector_clock: Dict[str, int] = make_initial_vc(NODE_IDS)
-store: Dict[str, dict] = {}   # lo usaremos en pasos futuros para alumnos
-log: List[dict] = []          # idem
+store: Dict[str, dict] = {}  
+log: List[dict] = []      
 hold_back_queue: List[dict] = []
 
 app = FastAPI(title=f"Nodo {NODE_ID}")
 
-class Health(BaseModel):
+# Modelado de clasessss, todas heredan de BaseModel
+
+class Health(BaseModel): # para el /health
     node_id: str
     vector_clock: Dict[str, int]
     store_size: int
     log_size: int
-class Alumno(BaseModel):
+
+class Alumno(BaseModel): # valida tipo de datos de usuario
     dni: str
     nombre: str
     carrera: str
@@ -62,12 +65,12 @@ def es_entregable(vc_recibido: Dict[str, int], origen: str) -> bool:
     Determina si una operación es causalmente entregable.
     """
     # 1. Debe ser el siguiente evento del origen
-    if vc_recibido[origen] != vector_clock[origen] + 1:
+    if vc_recibido[origen] != vector_clock[origen] + 1: # Emisor en la pos de la accion tiene que tener +1 que el propio
         return False
 
     # 2. Debe conocer todos los eventos previos de los demás
     for nodo, valor in vc_recibido.items():
-        if nodo != origen and valor > vector_clock[nodo]:
+        if nodo != origen and valor > vector_clock[nodo]: # el nodo que me llega no tiene que saber mas de lo que yo se (sin contar lo mio)
             return False
 
     return True
