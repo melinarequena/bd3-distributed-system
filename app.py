@@ -1,15 +1,37 @@
+# python
 from fastapi import FastAPI
-from pydantic import BaseModel # Estructuras de datos con validacion automatica
-from typing import Dict, List
-from fastapi import HTTPException # Codigos HTTP por errores
-import requests # Peticiones HTTP entre nodos
-import os # Leer env
+from pydantic import BaseModel
+from typing import Dict, List, Optional
+from fastapi import HTTPException
+import requests
+import os
+from pymongo import MongoClient
+from pymongo.collection import Collection
+from pymongo.database import Database
+from bson.objectid import ObjectId
 
-# --- Configuración simple del nodo ---
+class DatabaseConnection:
+    def __init__(self):
+        self.client: Optional[MongoClient] = None
+        self.db: Optional[Database] = None
+
+    def connect(self):
+        self.client = MongoClient(DBURL)
+        self.db = self.client["FIE"]
+
+    def get_collection(self, name: str) -> Collection:
+        if self.db is None:
+            raise Exception("Database not connected")
+        return self.db[name]
+
+    def close(self):
+        if self.client:
+            self.client.close()
+
 NODE_IDS: List[str] = ["n1", "n2", "n3"]
-NODE_ID: str = os.getenv("NODE_ID", "n1")  # definimos el id por variable de entorno
+NODE_ID: str = os.getenv("NODE_ID", "n1")
+DBURL: str = os.getenv("DBURL", "mongodb://root:example@localhost:27017")
 
-# --- Peers del sistema (los otros nodos) ---
 PEERS: Dict[str, str] = {
     "n1": "http://localhost:8001",
     "n2": "http://localhost:8002",
@@ -19,74 +41,93 @@ PEERS: Dict[str, str] = {
 def make_initial_vc(node_ids: List[str]) -> Dict[str, int]:
     return {nid: 0 for nid in node_ids}
 
-# --- Estado local mínimo (aún sin alumnos) ---
 vector_clock: Dict[str, int] = make_initial_vc(NODE_IDS)
-store: Dict[str, dict] = {}  
-log: List[dict] = []      
+log: List[dict] = []
 hold_back_queue: List[dict] = []
 
 app = FastAPI(title=f"Nodo {NODE_ID}")
+db = DatabaseConnection()
+db.connect()
+con = db.get_collection("alumnos")
 
-# Modelado de clasessss, todas heredan de BaseModel
-
-class Health(BaseModel): # para el /health
+class Health(BaseModel):
     node_id: str
     vector_clock: Dict[str, int]
-    store_size: int
+    db_size: int
     log_size: int
 
-class Alumno(BaseModel): # valida tipo de datos de usuario
+class Alumno(BaseModel):
     dni: str
     nombre: str
     carrera: str
     anio: int
     nota_promedio: float
 
-# Funciones auxiliares
+def serialize_doc(doc: dict) -> dict:
+    """
+    Convert a MongoDB document to JSON-serializable dict (stringify ObjectId).
+    """
+    if not doc:
+        return doc
+    d = doc.copy()
+    if "_id" in d and isinstance(d["_id"], ObjectId):
+        d["_id"] = str(d["_id"])
+    return d
 
 def replicar_a_peers(dni: str, alumno_data: dict):
     """
-    Envía el alumno creado a los demás nodos (excepto a sí mismo).
+    Send the created/updated alumno to other peers. Ensure payload is JSON-serializable.
     """
+    # make a shallow copy and stringify any ObjectId if present
+    payload = {}
+    for k, v in alumno_data.items():
+        if isinstance(v, ObjectId):
+            payload[k] = str(v)
+        else:
+            payload[k] = v
+
     for peer_id, peer_url in PEERS.items():
         if peer_id == NODE_ID:
-            continue  # no me mando a mí mismo
+            continue
         try:
-            r = requests.post(f"{peer_url}/replicate", json=alumno_data, timeout=3)
+            r = requests.post(f"{peer_url}/replicate", json=payload, timeout=3)
             if r.status_code == 200:
                 print(f"[{NODE_ID}] Replicado alumno {dni} a {peer_id}")
             else:
-                print(f"[{NODE_ID}] Error replicando a {peer_id}: {r.status_code}")
+                print(f"[{NODE_ID}] Error replicando a {peer_id}: {r.status_code} {r.text}")
         except Exception as e:
             print(f"[{NODE_ID}] No se pudo conectar con {peer_id}: {e}")
 
 def es_entregable(vc_recibido: Dict[str, int], origen: str) -> bool:
     """
-    Determina si una operación es causalmente entregable.
+    Determine if an operation is causally deliverable.
+    Use .get to avoid KeyError when keys are missing.
     """
-    # 1. Debe ser el siguiente evento del origen
-    if vc_recibido[origen] != vector_clock[origen] + 1: # Emisor en la pos de la accion tiene que tener +1 que el propio
+    # 1. must be the next event from the origin
+    if vc_recibido.get(origen, 0) != vector_clock.get(origen, 0) + 1:
         return False
 
-    # 2. Debe conocer todos los eventos previos de los demás
+    # 2. must not contain events from others that I don't know
     for nodo, valor in vc_recibido.items():
-        if nodo != origen and valor > vector_clock[nodo]: # el nodo que me llega no tiene que saber mas de lo que yo se (sin contar lo mio)
+        if nodo != origen and valor > vector_clock.get(nodo, 0):
             return False
 
     return True
 
 def aplicar_operacion(alumno_data: dict):
     """
-    Aplica una operación en el nodo local (guardar alumno y actualizar VC).
+    Apply operation locally: insert alumno and merge vector clocks.
     """
     dni = alumno_data["dni"]
-    store[dni] = alumno_data
-    origen = alumno_data["origin"]
-    vc_recibido = alumno_data["vc"]
+    origen = alumno_data.get("origin")
+    vc_recibido = alumno_data.get("vc", {})
 
-    # Actualiza el VC local: para cada nodo, tomar el máximo
+    # insert operation (store the incoming payload as-is)
+    con.insert_one(alumno_data)
+
+    # merge vector clocks (take max for each node), use .get for safety
     for nodo in vector_clock.keys():
-        vector_clock[nodo] = max(vector_clock[nodo], vc_recibido[nodo])
+        vector_clock[nodo] = max(vector_clock.get(nodo, 0), vc_recibido.get(nodo, 0))
 
     log.append({
         "action": "delivered",
@@ -100,37 +141,32 @@ def aplicar_operacion(alumno_data: dict):
 
 def procesar_hold_back_queue():
     """
-    Revisa las operaciones en espera y aplica las que ya sean entregables.
+    Check hold-back queue and deliver any now-deliverable operations.
     """
     pendientes = hold_back_queue.copy()
     for op in pendientes:
-        origen = op["origin"]
-        if es_entregable(op["vc"], origen):
+        origen = op.get("origin")
+        if origen is None:
+            continue
+        if es_entregable(op.get("vc", {}), origen):
             aplicar_operacion(op)
-            hold_back_queue.remove(op)
-            print(f"[{NODE_ID}] Entregada operación en cola de {origen} VC {op['vc']}")
-
-# Endpoints
+            try:
+                hold_back_queue.remove(op)
+            except ValueError:
+                pass
+            print(f"[{NODE_ID}] Entregada operación en cola de {origen} VC {op.get('vc')}")
 
 @app.get("/health", response_model=Health)
 def health():
-    """
-    Endpoint de chequeo: nos muestra el id del nodo y el VC.
-    Sirve para validar que cada proceso es "un nodo distinto".
-    """
     return Health(
         node_id=NODE_ID,
         vector_clock=vector_clock,
-        store_size=len(store),
+        db_size=con.count_documents({}),
         log_size=len(log),
     )
 
 @app.post("/alumnos")
 def crear_alumno(alumno: Alumno):
-    """
-    Crea un alumno localmente y actualiza el vector clock del nodo.
-    Luego replica la operación a los demás nodos.
-    """
     vector_clock[NODE_ID] += 1
 
     alumno_data = {
@@ -143,7 +179,7 @@ def crear_alumno(alumno: Alumno):
         "origin": NODE_ID
     }
 
-    store[alumno.dni] = alumno_data
+    con.insert_one(alumno_data)
 
     log.append({
         "action": "create",
@@ -152,62 +188,54 @@ def crear_alumno(alumno: Alumno):
         "origin": NODE_ID
     })
 
-    # 🔹 Propagar la operación a los otros nodos
     replicar_a_peers(alumno.dni, alumno_data)
 
     return {
         "message": f"Alumno {alumno.nombre} creado y replicado desde {NODE_ID}",
         "vector_clock": vector_clock,
-        "store_size": len(store)
+        "db_size": con.count_documents({})
     }
 
 @app.get("/alumnos")
 def listar_alumnos():
     """
-    Devuelve todos los alumnos guardados en este nodo.
+    Devuelve todos los alumnos como una lista de jsons.
     """
+    docs = list(con.find({}))
+    alumnos = [serialize_doc(d) for d in docs]
     return {
         "node_id": NODE_ID,
-        "total": len(store),
-        "alumnos": store
+        "total": len(alumnos),
+        "alumnos": alumnos
     }
 
 @app.get("/alumnos/{dni}")
 def obtener_alumno(dni: str):
-    """
-    Devuelve un alumno específico por DNI.
-    Si no existe, lanza error 404.
-    """
-    if dni not in store:
+    alumno = con.find_one({"dni": dni})
+    if alumno is None:
         raise HTTPException(status_code=404, detail=f"Alumno con DNI {dni} no encontrado en {NODE_ID}")
-
     return {
         "node_id": NODE_ID,
-        "alumno": store[dni]
+        "alumno": serialize_doc(alumno)
     }
 
 @app.post("/replicate")
 def recibir_replicacion(alumno_data: dict):
-    """
-    Recibe una operación replicada desde otro nodo.
-    Verifica si puede aplicarse según el vector clock.
-    Si no, la guarda en la hold-back queue.
-    """
-    dni = alumno_data["dni"]
-    origen = alumno_data["origin"]
-    vc_recibido = alumno_data["vc"]
+    dni = alumno_data.get("dni")
+    origen = alumno_data.get("origin")
+    vc_recibido = alumno_data.get("vc", {})
 
-    # Si ya lo tengo, lo ignoro (para evitar duplicados)
-    if dni in store:
+    if dni is None or origen is None:
+        return {"status": "error", "reason": "missing dni/origin"}
+
+    if con.find_one({"dni": dni}) is not None:
         return {"status": "ignored", "reason": "ya existe"}
 
-    # 1️⃣ Verificamos si la operación es causalmente entregable
     if es_entregable(vc_recibido, origen):
         aplicar_operacion(alumno_data)
         procesar_hold_back_queue()
         return {"status": "delivered", "node": NODE_ID}
 
-    # 2️⃣ Si no es entregable, la guardamos en la cola
     hold_back_queue.append(alumno_data)
     log.append({
         "action": "queued",
@@ -222,17 +250,11 @@ def recibir_replicacion(alumno_data: dict):
 
 @app.put("/alumnos/{dni}")
 def actualizar_alumno(dni: str, alumno: Alumno):
-    """
-    Actualiza los datos de un alumno localmente y propaga el cambio.
-    Incrementa el vector clock y replica la operación.
-    """
-    if dni not in store:
+    if con.find_one({"dni": dni}) is None:
         raise HTTPException(status_code=404, detail=f"Alumno {dni} no encontrado en {NODE_ID}")
 
-    # 1️⃣ Incrementar reloj local
     vector_clock[NODE_ID] += 1
 
-    # 2️⃣ Actualizar datos del alumno existente
     alumno_data = {
         "dni": dni,
         "nombre": alumno.nombre,
@@ -242,9 +264,8 @@ def actualizar_alumno(dni: str, alumno: Alumno):
         "vc": vector_clock.copy(),
         "origin": NODE_ID
     }
-    store[dni] = alumno_data
+    con.update_one({"dni": dni}, {"$set": alumno_data})
 
-    # 3️⃣ Registrar en log
     log.append({
         "action": "update",
         "dni": dni,
@@ -252,7 +273,6 @@ def actualizar_alumno(dni: str, alumno: Alumno):
         "vector_clock": vector_clock.copy()
     })
 
-    # 4️⃣ Propagar el cambio a los demás nodos
     replicar_a_peers(dni, alumno_data)
 
     return {
@@ -262,10 +282,6 @@ def actualizar_alumno(dni: str, alumno: Alumno):
 
 @app.get("/log")
 def ver_log():
-    """
-    Devuelve el log local completo de este nodo.
-    Permite ver las operaciones realizadas o recibidas.
-    """
     return {
         "node_id": NODE_ID,
         "log_size": len(log),
@@ -274,11 +290,8 @@ def ver_log():
 
 @app.get("/queue")
 def ver_hold_back_queue():
-    """
-    Devuelve las operaciones en espera (no entregables aún).
-    """
     return {
         "node_id": NODE_ID,
         "queue_size": len(hold_back_queue),
-        "hold_back_queue": hold_back_queue
+        "hold_back_queue": [serialize_doc(q) if isinstance(q, dict) else q for q in hold_back_queue]
     }

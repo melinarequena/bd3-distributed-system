@@ -1,0 +1,36 @@
+services:
+  db1:
+    image: mongo:latest
+    container_name: mongodb1
+    ports:
+      - "8004:27017"
+    volumes:
+      - mongo-data1:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+  db2:
+    image: mongo:latest
+    container_name: mongodb2
+    ports:
+      - "8005:27017"
+    volumes:
+      - mongo-data2:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+  db3:
+    image: mongo:latest
+    container_name: mongodb3
+    ports:
+      - "8006:27017"
+    volumes:
+      - mongo-data3:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+
+volumes:
+  mongo-data1:
+  mongo-data2:
+  mongo-data3:

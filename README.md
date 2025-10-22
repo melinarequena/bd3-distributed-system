@@ -20,9 +20,9 @@ El sistema simula un entorno académico distribuido, donde los nodos gestionan i
 
 - **Tres nodos independientes** (N1, N2, N3).  
 - Cada nodo:
-  - Ejecuta una instancia del servidor **FastAPI**.  
-  - Mantiene su propio:
-    - `store` → almacenamiento local de alumnos.  
+  - Ejecuta una instancia del servidor **FastAPI**. 
+  - Ejecuta una instancia de MongoDB
+  - Mantiene su propio:  
     - `vector_clock` → estado causal del nodo.  
     - `log` → registro local de operaciones.  
     - `hold_back_queue` → cola de operaciones no entregables.
@@ -41,30 +41,32 @@ El sistema simula un entorno académico distribuido, donde los nodos gestionan i
 
 ## ⚙️ Tecnologías y Stack
 
-| Componente | Descripción |
-|-------------|-------------|
-| **Lenguaje** | Python 3.11.9 |
-| **Framework Web** | FastAPI |
-| **Servidor ASGI** | Uvicorn |
-| **Cliente HTTP interno** | `requests` |
-| **Modelado de datos** | Pydantic |
-| **Entorno** | Windows / Linux / macOS (local o VM) |
+| Componente               | Descripción                          |
+|--------------------------|--------------------------------------|
+| **Lenguaje**             | Python 3.11.9                        |
+| **Framework Web**        | FastAPI                              |
+| **Servidor ASGI**        | Uvicorn                              |
+| **Base de Datos**        | MongoDB                              |'
+| **Cliente HTTP interno** | `requests`                           |
+| **Modelado de datos**    | Pydantic                             |
+| **Entorno**              | Windows / Linux / macOS (local o VM) |
 
 ### 📦 Dependencias principales
 ```bash
-pip install fastapi uvicorn pydantic requests
+pip install fastapi uvicorn pydantic requests pymongo
 ```
 
 ---
 
 ## 🚀 Ejecucion
-### 1️⃣ Levantar los tres nodos
+### 1️⃣ Levantar los tres nodos y sus bases de datos
 
 ---
 
 ### Nodo 1
 ```bash
 $env:NODE_ID="n1"
+$env:DBURL="mongodb://root:example@localhost:8004"
 uvicorn app:app --port 8001 --reload
 ```
 
@@ -72,15 +74,20 @@ uvicorn app:app --port 8001 --reload
 ### Nodo 2
 ```bash
 $env:NODE_ID="n2"
+$env:DBURL="mongodb://root:example@localhost:8005"
 uvicorn app:app --port 8002 --reload
 ```
 
 ### Nodo 3
 ```bash
 $env:NODE_ID="n3"
+$env:DBURL="mongodb://root:example@localhost:8006"
 uvicorn app:app --port 8003 --reload
 ```
-
+### Bases de Datos
+```bash
+docker-compose up -d
+```
 
 ### 2️⃣ Interfaz de prueba (Swagger)
 

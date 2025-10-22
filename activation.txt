@@ -1,11 +1,14 @@
 $env:NODE_ID="n1"
+$env:DBURL="mongodb://root:example@localhost:8004"
 uvicorn app:app --port 8001 --reload
 
 
 $env:NODE_ID="n2"
+$env:DBURL="mongodb://root:example@localhost:8005"
 uvicorn app:app --port 8002 --reload
 
 
 
 $env:NODE_ID="n3"
+$env:DBURL="mongodb://root:example@localhost:8006"
 uvicorn app:app --port 8003 --reload
